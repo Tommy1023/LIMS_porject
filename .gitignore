@@ -1,0 +1,11 @@
+# 排除虛擬環境
+venv/
+.env
+
+# 排除 Python 快取
+__pycache__/
+*.py[cod]
+
+# 排除資料庫檔案 (通常不建議將資料庫存入版本控制)
+*.db
+PortableGit/
