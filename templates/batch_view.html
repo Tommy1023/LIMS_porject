@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>LIMS 批次作業 - {{ batch.batch_no }}</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; margin: 0; padding: 20px; }
+        .header-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; justify-content: space-between; margin-bottom: 20px; }
+        .batch-title { font-size: 1.5em; font-weight: bold; color: #2c3e50; }
+        .info-tag { background: #e1ecf4; color: #39739d; padding: 5px 10px; border-radius: 15px; font-size: 0.9em; margin-right: 10px; }
+        
+        .scanner-area { text-align: center; margin-bottom: 30px; }
+        #scanner-input { width: 60%; padding: 15px; font-size: 1.2em; border: 2px solid #3498db; border-radius: 30px; outline: none; transition: all 0.3s; }
+        #scanner-input:focus { box-shadow: 0 0 15px rgba(52, 152, 219, 0.3); }
+
+        .worklist { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .worklist th { background: #34495e; color: white; padding: 12px; text-align: left; }
+        .worklist td { padding: 12px; border-bottom: 1px solid #eee; }
+        
+        /* 狀態樣式 */
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 0.85em; }
+        .status-Pending { background: #ecf0f1; color: #7f8c8d; }
+        .status-Scanned { background: #f1c40f; color: white; }
+        .status-Saved { background: #2ecc71; color: white; }
+
+        /* 高亮行樣式 */
+        .highlight-row { background-color: #dbfcfe !important; border-left: 5px solid #3498db; }
+        input.weight-input { width: 80px; padding: 5px; border: 1px solid #ddd; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div class="header-card">
+        <div>
+            <div class="batch-title">{{ batch.batch_no }}</div>
+            <div style="margin-top:10px;">
+                <span class="info-tag">{{ batch.method.method_code }}</span>
+                <span class="info-tag">{{ batch.method.method_name }}</span>
+                <span class="info-tag">內標: {{ batch.method.is_amount }} mL</span>
+            </div>
+        </div>
+        <div style="text-align: right; color: #666;">
+            <strong>消化條件</strong><br>
+            溫度: {{ batch.digestion.temp_celsius }}°C <br>
+            時間: {{ batch.digestion.duration_min }} min <br>
+            {{ batch.digestion.reagents }}
+        </div>
+    </div>
+
+    <div class="scanner-area">
+        <input type="text" id="scanner-input" placeholder="請掃描報告號碼 (Job No)..." autofocus>
+    </div>
+
+    <table class="worklist">
+        <thead>
+            <tr>
+                <th width="50">序</th>
+                <th>報告號碼 (Job No)</th>
+                <th>樣品名稱</th>
+                <th>取樣重量 (g)</th>
+                <th>狀態</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for record in records %}
+            <tr id="row-{{ record.job_no }}" class="record-row">
+                <td>{{ loop.index }}</td>
+                <td class="job-no">{{ record.job_no }}</td>
+                <td>{{ record.sample_name }}</td>
+                <td>
+                    <input type="number" step="0.0001" class="weight-input" 
+                           id="input-{{ record.job_no }}" 
+                           value="{{ record.weight if record.weight else '' }}"
+                           onkeydown="handleWeightEnter(event, '{{ record.job_no }}', '{{ record.id }}')">
+                </td>
+                <td><span class="status-badge status-{{ record.status }}" id="status-{{ record.job_no }}">{{ record.status }}</span></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <script>
+        // 條碼掃描邏輯
+        const scannerInput = document.getElementById('scanner-input');
+        
+        scannerInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                const scannedCode = this.value.trim();
+                if (!scannedCode) return;
+
+                // 1. 尋找對應的行
+                const targetRow = document.getElementById('row-' + scannedCode);
+                const targetInput = document.getElementById('input-' + scannedCode);
+
+                if (targetRow && targetInput) {
+                    // 2. 移除其他高亮
+                    document.querySelectorAll('.record-row').forEach(r => r.classList.remove('highlight-row'));
+                    
+                    // 3. 高亮並捲動到該行
+                    targetRow.classList.add('highlight-row');
+                    targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    
+                    // 4. 更新狀態並將焦點移至重量輸入框
+                    document.getElementById('status-' + scannedCode).innerText = 'Scanned';
+                    document.getElementById('status-' + scannedCode).className = 'status-badge status-Scanned';
+                    
+                    setTimeout(() => targetInput.focus(), 100); // 延遲確保焦點轉移
+                } else {
+                    alert('找不到此報告號碼: ' + scannedCode);
+                }
+                
+                // 清空掃描框，準備下一次掃描
+                this.value = '';
+            }
+        });
+
+        // 重量輸入邏輯
+        async function handleWeightEnter(e, jobNo, recordId) {
+            if (e.key === 'Enter') {
+                const val = parseFloat(e.target.value);
+                if (isNaN(val)) return;
+
+                // 發送 API 更新
+                const response = await fetch('/record/' + recordId, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ weight: val })
+                });
+
+                if (response.ok) {
+                    // 變綠色
+                    const row = document.getElementById('row-' + jobNo);
+                    row.classList.remove('highlight-row'); // 移除高亮
+                    
+                    const badge = document.getElementById('status-' + jobNo);
+                    badge.innerText = 'Saved';
+                    badge.className = 'status-badge status-Saved';
+                    
+                    // 焦點回到掃描框，準備下一支
+                    scannerInput.focus();
+                } else {
+                    alert('儲存失敗');
+                }
+            }
+        }
+    </script>
+</body>
+</html>

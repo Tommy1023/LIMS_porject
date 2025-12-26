@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>LIMS 系統首頁</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+        .container { border: 1px solid #ccc; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input { width: 100%; padding: 8px; box-sizing: border-box; }
+        button { width: 100%; padding: 10px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background-color: #218838; }
+        .hint { color: #666; font-size: 0.9em; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🧪 LIMS 批次建立系統</h2>
+    <form id="createForm">
+        <div class="form-group">
+            <label>檢測方法代碼 (Method Code)</label>
+            <input type="text" name="method_code" value="M103C" required>
+            <div class="hint">預設測試代碼：M103C</div>
+        </div>
+
+        <div class="form-group">
+            <label>操作人員 (Operator)</label>
+            <input type="text" name="operator" placeholder="請輸入姓名" required>
+        </div>
+
+        <button type="submit">建立新批次 & 開始作業</button>
+    </form>
+</div>
+
+<script>
+    document.getElementById('createForm').addEventListener('submit', async function(e) {
+        e.preventDefault(); // 防止表單直接送出造成頁面刷新
+        
+        const formData = new FormData(this);
+        
+        try {
+            // 呼叫後端 API
+            const response = await fetch('/create_batch', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                // 成功後，直接跳轉到批次頁面
+                window.location.href = `/batch/${result.batch_no}`;
+            } else {
+                alert("建立失敗：請確認方法代碼是否正確 (例如 M103C)");
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert("系統發生錯誤");
+        }
+    });
+</script>
+
+</body>
+</html>

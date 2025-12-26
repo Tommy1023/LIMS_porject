@@ -1,94 +1,99 @@
-import pandas as pd
-import io
-from fastapi import FastAPI, Depends, HTTPException,UploadFile, File
-from sqlmodel import Session, select
-from typing import List
-from contextlib import asynccontextmanager # 1. 引入這個工具
+from fastapi import FastAPI, Request, Form, HTTPException, Depends
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
+from sqlmodel import Session, select, func
+from database import engine, create_db_and_tables, PrepBatch, Method, DigestionCondition, TestRecord, lab_round
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pydantic import BaseModel
 
-# 1. 初始化 FastAPI 實例
-# 引入你的資料庫邏輯
-from database import engine, Sample, create_db_and_tables
-
-# 2. 定義 lifespan 邏輯
+# 初始化與生命週期
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 【啟動時執行】
-    print("正在啟動系統，檢查資料庫...")
     create_db_and_tables()
-    
-    yield # 分隔線：yield 之前是啟動，之後是關閉
-    
-    # 【關閉時執行】
-    print("正在關閉系統...")
-
-# 3. 初始化 FastAPI 時傳入 lifespan
-app = FastAPI(
-    title="我的實驗室 LIMS 系統", 
-    lifespan=lifespan # 綁定 lifespan
-)
-
-# 3. 首頁路由
-@app.get("/")
-def read_root():
-    return {
-        "status": "Online",
-        "message": "LIMS 系統運行中",
-        "endpoints": {
-            "查看樣品清單": "/samples",
-            "互動式 API 文件": "/docs"
-        }
-    }
-
-# 4. 取得所有樣品清單的 API
-@app.get("/samples", response_model=List[Sample])
-def get_all_samples():
+    # 初始化一些假資料方便測試 (若資料庫為空)
     with Session(engine) as session:
-        # 執行 SELECT * FROM sample
-        statement = select(Sample)
-        results = session.exec(statement).all()
-        return results
-
-# 5. 根據樣品編號查詢特定數據的 API
-@app.get("/samples/{sample_id}", response_model=Sample)
-def get_sample_by_id(sample_id: str):
-    with Session(engine) as session:
-        statement = select(Sample).where(Sample.sample_id == sample_id)
-        result = session.exec(statement).first()
-        if not result:
-            raise HTTPException(status_code=404, detail="找不到該樣品數據")
-        return result
-    
-@app.post("/upload-excel")
-async def upload_excel(file: UploadFile = File(...)):
-    # 1. 檢查副檔名
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="請上傳 Excel 檔案")
-
-    # 2. 讀取上傳的內容到記憶體
-    contents = await file.read()
-    
-    try:
-        # 3. 使用 Pandas 解析記憶體中的 Excel (不需存成實體檔案)
-        df = pd.read_excel(io.BytesIO(contents), sheet_name='批次表', skiprows=2)
-        
-        with Session(engine) as session:
-            count = 0
-            for _, row in df.iterrows():
-                # 排除空行
-                if pd.isna(row.get('樣品編號')):
-                    continue
-                
-                # 建立樣品物件
-                new_sample = Sample(
-                    sample_id=str(row['樣品編號']),
-                    weight=row.get('取樣重量(g)'),
-                    batch_name=f"Upload_{file.filename}"
-                )
-                session.add(new_sample)
-                count += 1
-            
+        if not session.exec(select(Method)).first():
+            print("初始化測試資料...")
+            m = Method(method_code="M103C", method_name="ICP-MS 重金屬檢測", default_weight=0.5, is_amount=0.5)
+            d = DigestionCondition(temp_celsius=120, duration_min=120, reagents="HNO3: 5ml")
+            session.add(m)
+            session.add(d)
             session.commit()
-            return {"message": "導入成功", "filename": file.filename, "imported_count": count}
+    yield
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"解析失敗: {str(e)}")
+app = FastAPI(lifespan=lifespan)
+templates = Jinja2Templates(directory="templates")
+
+# Pydantic 模型用於接收 JSON 數據
+class WeightUpdate(BaseModel):
+    weight: float
+    
+# --- 0. 首頁入口  ---
+@app.get("/")
+async def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+# --- 1. 建立新批次 (自動編號邏輯) ---
+@app.post("/create_batch")
+async def create_batch(method_code: str = Form(...), operator: str = Form(...)):
+    with Session(engine) as session:
+        # 找方法與預設消化條件
+        method = session.exec(select(Method).where(Method.method_code == method_code)).first()
+        if not method: raise HTTPException(404, "Method not found")
+        digest = session.exec(select(DigestionCondition)).first() # 暫時抓第一個
+
+        # 自動編號: YYYYMMDD-Code-Seq
+        today_str = datetime.now().strftime("%Y%m%d")
+        base_no = f"{today_str}-{method_code}"
+        count = session.exec(select(func.count(PrepBatch.id)).where(PrepBatch.batch_no.like(f"{base_no}%"))).one()
+        new_batch_no = f"{base_no}-{count + 1}"
+
+        # 建立批次
+        new_batch = PrepBatch(
+            batch_no=new_batch_no, 
+            method_id=method.id, 
+            digestion_id=digest.id, 
+            operator=operator, 
+            prep_date=today_str
+        )
+        session.add(new_batch)
+        session.commit()
+        session.refresh(new_batch)
+        
+        # 自動建立一些測試樣品 (模擬)
+        for i in range(1, 6):
+            rec = TestRecord(batch_id=new_batch.id, job_no=f"JOB{today_str}{i:03d}", sample_name=f"Sample-{i}")
+            session.add(rec)
+        session.commit()
+        
+        return {"status": "ok", "batch_no": new_batch_no}
+
+# --- 2. 批次作業介面 (HTML) ---
+@app.get("/batch/{batch_no}")
+async def view_batch(request: Request, batch_no: str):
+    with Session(engine) as session:
+        batch = session.exec(select(PrepBatch).where(PrepBatch.batch_no == batch_no)).first()
+        if not batch: raise HTTPException(404, "Batch not found")
+        # 確保關聯資料載入
+        records = sorted(batch.records, key=lambda r: r.job_no)
+        
+        return templates.TemplateResponse("batch_view.html", {
+            "request": request, 
+            "batch": batch, 
+            "records": records
+        })
+
+# --- 3. 條碼掃描更新重量 API ---
+@app.patch("/record/{record_id}")
+async def update_record_weight(record_id: int, data: WeightUpdate):
+    with Session(engine) as session:
+        record = session.get(TestRecord, record_id)
+        if not record: raise HTTPException(404, "Record not found")
+        
+        record.weight = data.weight
+        record.status = "Saved"
+        # 這裡未來可以加入即時計算 final_result 的邏輯
+        session.add(record)
+        session.commit()
+        return {"status": "success", "new_weight": record.weight}
